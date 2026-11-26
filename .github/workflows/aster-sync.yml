@@ -1,0 +1,21 @@
+name: Aster Sync Windows
+on:
+  push:
+    branches: [aster-sync]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo test --release --locked
+      - run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: Copy-Item target/release/irminsul.exe Irminsul-Aster-Sync.exe
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Irminsul-Aster-Sync
+          path: Irminsul-Aster-Sync.exe

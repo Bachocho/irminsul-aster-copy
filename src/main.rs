@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing_appender::rolling::Rotation;
@@ -23,7 +24,7 @@ mod player_data;
 mod update;
 mod wish;
 
-const APP_ID: &str = "Irminsul";
+const APP_ID: &str = "Irminsul Aster Sync";
 
 #[derive(Clone, Copy, Debug)]
 pub enum ConfirmationType {
@@ -110,6 +111,9 @@ struct Args {
         default_value_t = capture::DEFAULT_CAPTURE_BACKEND_TYPE
     )]
     capture_backend: capture::BackendType,
+    /// URL-safe base64 encoded UTF-8 path to an existing Aster account folder.
+    #[arg(long)]
+    aster_export: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
@@ -171,6 +175,14 @@ fn main() -> eframe::Result {
     }
 
     let capture_backend = args.capture_backend;
+    let aster_folder = args.aster_export.as_ref().and_then(|encoded| {
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded).ok()?;
+        let path = PathBuf::from(String::from_utf8(decoded).ok()?);
+        (path.is_absolute() && path.is_dir()).then_some(path)
+    });
+    if args.aster_export.is_some() && aster_folder.is_none() {
+        tracing::error!("Invalid Aster export folder; refusing automatic export.");
+    }
 
     let background_image_size = [1600., 1000.];
 
@@ -188,13 +200,14 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "Irminsul",
+        "Irminsul Aster Sync",
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(app::IrminsulApp::new(
                 cc,
                 reload_handle,
                 capture_backend,
+                aster_folder,
             )))
         }),
     )

@@ -65,6 +65,7 @@ enum OptimizerExportTarget {
     None,
     Clipboard,
     File,
+    Aster,
 }
 
 pub struct IrminsulApp {
@@ -86,6 +87,9 @@ pub struct IrminsulApp {
     optimizer_save_dialog: Option<FileDialog>,
     optimizer_save_path: Option<PathBuf>,
     optimizer_export_target: OptimizerExportTarget,
+    aster_folder: Option<PathBuf>,
+    aster_attempted: bool,
+    aster_status: String,
 
     restarting: bool,
 
@@ -181,6 +185,7 @@ impl IrminsulApp {
         cc: &eframe::CreationContext<'_>,
         mut tracing_reload_handle: ReloadHandle,
         capture_backend: capture::BackendType,
+        aster_folder: Option<PathBuf>,
     ) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         egui_material_icons::initialize(&cc.egui_ctx);
@@ -196,7 +201,7 @@ impl IrminsulApp {
         let (ui_message_tx, state_rx, wish_url_rx) =
             start_async_runtime(cc.egui_ctx.clone(), log_packets_rx, capture_backend);
 
-        if saved_state.auto_start_capture {
+        if saved_state.auto_start_capture || aster_folder.is_some() {
             if let Err(e) = ui_message_tx.send(Message::StartCapture) {
                 tracing::error!("Failed to send auto start message: {e}");
             }
@@ -218,6 +223,9 @@ impl IrminsulApp {
             optimizer_save_dialog: None,
             optimizer_save_path: None,
             optimizer_export_target: OptimizerExportTarget::None,
+            aster_folder,
+            aster_attempted: false,
+            aster_status: "Waiting for a fresh inventory".into(),
             restarting: false,
             state_rx,
             wish_url_rx,
@@ -582,6 +590,21 @@ impl IrminsulApp {
 
     fn genshin_optimizer_ui(&mut self, ui: &mut egui::Ui, app_state: &AppState) {
         self.optimizer_handle_export(ui).toast_error(self);
+        if let Some(folder) = self.aster_folder.clone() {
+            ui.label("Aster Sync — one export per launch");
+            ui.label(&self.aster_status);
+            ui.label(folder.display().to_string()).on_hover_text("Sign in only to the account you selected in Aster. Close this scanner before changing accounts.");
+            if !self.aster_attempted
+                && app_state.updated.characters_updated.is_some()
+                && app_state.updated.items_updated.is_some()
+                && self.optimizer_export_rx.is_none()
+            {
+                self.aster_attempted = true;
+                self.aster_status = "Exporting fresh inventory…".into();
+                self.genshin_optimizer_request_export(OptimizerExportTarget::Aster);
+                ui.ctx().request_repaint();
+            }
+        }
 
         ui.vertical(|ui| {
             egui::Sides::new().show(
@@ -641,10 +664,27 @@ impl IrminsulApp {
 
     fn genshin_optimizer_request_export(&mut self, target: OptimizerExportTarget) {
         let (tx, rx) = oneshot::channel();
-        let _ = self.ui_message_tx.send(Message::ExportGenshinOptimizer(
-            self.saved_state.export_settings.clone(),
-            tx,
-        ));
+        let settings = if matches!(target, OptimizerExportTarget::Aster) {
+            ExportSettings {
+                include_characters: true,
+                include_artifacts: true,
+                include_weapons: true,
+                include_materials: true,
+                fake_initialize_4th_line: false,
+                min_character_level: 1,
+                min_character_ascension: 0,
+                min_character_constellation: 0,
+                min_artifact_level: 0,
+                min_artifact_rarity: 1,
+                min_weapon_level: 1,
+                min_weapon_refinement: 1,
+                min_weapon_ascension: 0,
+                min_weapon_rarity: 1,
+            }
+        } else {
+            self.saved_state.export_settings.clone()
+        };
+        let _ = self.ui_message_tx.send(Message::ExportGenshinOptimizer(settings, tx));
         self.optimizer_export_target = target;
         self.optimizer_export_rx = Some(rx);
     }
@@ -902,9 +942,28 @@ impl IrminsulApp {
             return Ok(());
         };
 
-        let json = rx.blocking_recv()??;
+        let mut rx = rx;
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(oneshot::error::TryRecvError::Empty) => {
+                self.optimizer_export_rx = Some(rx);
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                return Ok(());
+            }
+            Err(e) => Err(anyhow!("Export request failed: {e}")),
+        };
+        let target = std::mem::replace(&mut self.optimizer_export_target, OptimizerExportTarget::None);
+        let json = match result {
+            Ok(json) => json,
+            Err(e) => {
+                if matches!(target, OptimizerExportTarget::Aster) {
+                    self.aster_status = "Export failed; close and relaunch from Aster.".into();
+                }
+                return Err(e);
+            }
+        };
 
-        match self.optimizer_export_target {
+        match target {
             OptimizerExportTarget::None => {
                 tracing::warn!("Unexpected json export");
             }
@@ -913,6 +972,19 @@ impl IrminsulApp {
             }
             OptimizerExportTarget::File => {
                 self.optimizer_save_to_file(json)?;
+            }
+            OptimizerExportTarget::Aster => {
+                let folder = self.aster_folder.as_ref().context("No Aster folder")?;
+                match save_aster_report(folder, &json) {
+                    Ok(_) => {
+                        self.aster_status = "Export saved. Close before changing accounts.".into();
+                        self.toasts.info("Aster report saved");
+                    }
+                    Err(e) => {
+                        self.aster_status = "Export failed; close and relaunch from Aster.".into();
+                        return Err(e);
+                    }
+                }
             }
         }
 
@@ -948,5 +1020,38 @@ impl IrminsulApp {
 
     fn section_header(ui: &mut egui::Ui, name: &str) {
         ui.label(RichText::new(name).size(18.));
+    }
+}
+
+/// Publish only a complete JSON report; the watcher ignores temporary files.
+fn save_aster_report(folder: &std::path::Path, json: &str) -> Result<PathBuf> {
+    let parsed: serde_json::Value = serde_json::from_str(json)?;
+    if parsed["format"] != "GOOD"
+        || !["characters", "weapons", "artifacts"].iter().all(|key| parsed[*key].is_array())
+        || !parsed["materials"].is_object()
+        || parsed["characters"].as_array().is_none_or(|items| items.is_empty())
+    {
+        return Err(anyhow!("Incomplete GOOD report"));
+    }
+    let mut temp = tempfile::Builder::new().prefix("aster-").suffix(".pending").tempfile_in(folder)?;
+    temp.write_all(json.as_bytes())?;
+    temp.as_file().sync_all()?;
+    let target = temp.path().with_extension("json");
+    temp.persist_noclobber(&target)?;
+    Ok(target)
+}
+
+#[cfg(test)]
+mod aster_export_tests {
+    use super::*;
+    #[test]
+    fn publishes_complete_report_only() {
+        let folder = tempfile::tempdir().unwrap();
+        assert!(save_aster_report(folder.path(), "{}").is_err());
+        assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
+        let report = r#"{"format":"GOOD","characters":[{"key":"Amber"}],"artifacts":[],"weapons":[],"materials":{}}"#;
+        let path = save_aster_report(folder.path(), report).unwrap();
+        assert_eq!(path.extension().unwrap(), "json");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), report);
     }
 }
