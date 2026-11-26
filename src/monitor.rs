@@ -124,6 +124,10 @@ impl Monitor {
                 cancel_token.cancel();
                 self.app_state.update_capturing_state(false);
             }
+            Message::ExportAster(settings, reply_tx) => {
+                let has_achievements = self.app_state.app_state.updated.achievements_updated.is_some();
+                let _ = reply_tx.send(self.player_data.export_aster(&settings, has_achievements));
+            }
             Message::ExportGenshinOptimizer(settings, reply_tx) => {
                 let _ = reply_tx.send(self.player_data.export_genshin_optimizer(&settings));
             }

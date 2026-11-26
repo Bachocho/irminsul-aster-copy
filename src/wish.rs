@@ -152,7 +152,7 @@ impl Wish {
 
         validate_url(&url).await?;
 
-        tracing::info!("found {url}");
+        tracing::info!("Found a validated wish-history link");
         self.prev_url = url.to_string();
         let _ = self.url_tx.send(Some(url));
 

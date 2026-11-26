@@ -599,10 +599,19 @@ impl IrminsulApp {
                 && app_state.updated.items_updated.is_some()
                 && self.optimizer_export_rx.is_none()
             {
+                let ready_at = app_state.updated.characters_updated
+                    .max(app_state.updated.items_updated).expect("checked above");
+                if app_state.updated.achievements_updated.is_none()
+                    && ready_at.elapsed() < std::time::Duration::from_secs(12)
+                {
+                    self.aster_status = "Waiting briefly for achievements…".into();
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                } else {
                 self.aster_attempted = true;
                 self.aster_status = "Exporting fresh inventory…".into();
                 self.genshin_optimizer_request_export(OptimizerExportTarget::Aster);
                 ui.ctx().request_repaint();
+                }
             }
         }
 
@@ -684,7 +693,12 @@ impl IrminsulApp {
         } else {
             self.saved_state.export_settings.clone()
         };
-        let _ = self.ui_message_tx.send(Message::ExportGenshinOptimizer(settings, tx));
+        let message = if matches!(target, OptimizerExportTarget::Aster) {
+            Message::ExportAster(settings, tx)
+        } else {
+            Message::ExportGenshinOptimizer(settings, tx)
+        };
+        let _ = self.ui_message_tx.send(message);
         self.optimizer_export_target = target;
         self.optimizer_export_rx = Some(rx);
     }

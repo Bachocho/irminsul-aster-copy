@@ -56,3 +56,6 @@ Irmunsil is built upon the work of many others.
 ## Aster Sync Edition (experimental)
 
 A separate user fork. Aster launches this scanner with `--aster-export=<URL-safe base64 without padding of an absolute existing account import directory>`. The scanner automatically starts its existing capture process and publishes one full GOOD export after both item and character data are available in the new process. All rarities are included; ordinary manual export settings remain unchanged. Select the correct profile in Aster, close any previous scanner instance, and sign in only to that account. Close the scanner before changing accounts; restart it from Aster for each fresh capture. GOOD reports do not contain account UIDs, and no unattended live inventory refresh is guaranteed. Temporary files are not visible to the JSON watcher. This fork does not change how packets are collected or interpreted. No account data is uploaded. The fork has its own update repository and settings namespace.
+
+### Chronicle update
+Aster exports achievement records with their raw status and completion timestamp when the existing capture receives them. It waits up to 12 seconds after inventory arrives. No achievement packet means the field is omitted, not an empty completion list. Wish-history links are no longer printed to the log. No capture mechanism changes.

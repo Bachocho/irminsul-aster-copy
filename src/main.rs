@@ -57,6 +57,7 @@ pub enum Message {
     StartCapture,
     StopCapture,
     ExportGenshinOptimizer(ExportSettings, oneshot::Sender<Result<String>>),
+    ExportAster(ExportSettings, oneshot::Sender<Result<String>>),
 }
 
 #[derive(Clone, Debug)]

@@ -69,6 +69,21 @@ impl PlayerData {
         self.items = items.into();
     }
 
+    pub fn export_aster(&self, settings: &ExportSettings, has_achievements: bool) -> Result<String> {
+        let mut report: serde_json::Value =
+            serde_json::from_str(&self.export_genshin_optimizer(settings)?)?;
+        if has_achievements {
+            report["asterAchievements"] = serde_json::Value::Array(
+                self.achievements.iter().map(|a| serde_json::json!({
+                    "id": a.id,
+                    "status": a.status,
+                    "finishTimestamp": a.finish_timestamp,
+                })).collect(),
+            );
+        }
+        Ok(serde_json::to_string(&report)?)
+    }
+
     pub fn export_genshin_optimizer(&self, settings: &ExportSettings) -> Result<String> {
         let mut good = good::Good {
             format: "GOOD".to_string(),
